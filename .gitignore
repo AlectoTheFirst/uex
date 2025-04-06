@@ -16,6 +16,7 @@
 
 # Go workspace file
 go.work
+.DS_Store
 
 # Environment variables file
 .env*
