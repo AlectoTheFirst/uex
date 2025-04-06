@@ -27,12 +27,9 @@ jobs:
       - name: Build binary
         run: go build -o uex ./cmd/uex
         
-      - name: Create GitHub Release
+      - name: Upload artifacts to existing release
         uses: ncipollo/release-action@v1
         with:
           artifacts: uex
           token: ${{ secrets.GITHUB_TOKEN }}
           tag: ${{ github.ref_name }}
-          name: Release ${{ github.ref_name }}
-          body: |
-            Automated release for version ${{ github.ref_name }}.
