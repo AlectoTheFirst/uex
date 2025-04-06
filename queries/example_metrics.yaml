@@ -1,0 +1,29 @@
+# metrics:
+#   - name: "myapp_http_requests_by_status"
+#     help: "Total HTTP requests to myapp by status code"
+#     # type: gauge # Optional, defaults to gauge
+#     query:
+#       indices: ["myapp-logs-*"]
+#       term_field: "http.response.status_code"
+#       # filter_query_string: "service.name:my-web-app" # Optional filter
+#       size: 20
+#       min_doc_count: 1 # Optional: Only show terms with at least 1 doc
+#     labels:
+#       term_label: "status_code"
+#       static:
+#         environment: "production"
+#         service: "my-web-app"
+
+#   - name: "myapp_errors_by_type"
+#     help: "Application errors categorized by error type"
+#     query:
+#       indices: ["myapp-logs-*", "filebeat-*"] # Supports multiple indices
+#       term_field: "error.type.keyword"        # Use .keyword for exact match usually
+#       filter_query: '{"term": {"log.level": "error"}}' # JSON DSL filter
+#       size: 50
+#       # missing: "unknown" # Optional: Group docs missing the field under 'unknown' label
+#     labels:
+#       term_label: "error_type"
+#       static:
+#         environment: "production"
+#         service: "my-generic-app" # Could be different from above

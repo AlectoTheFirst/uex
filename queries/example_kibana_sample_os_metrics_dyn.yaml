@@ -1,0 +1,13 @@
+metrics:
+  - name: "os_doc_count_by_keyword_last_15m" # Descriptive metric name
+    help: "Document count by machine.os.keyword over the last 15 minutes (top 10)"
+    query:
+      indices: ["kibana_sample_data_logs"]   # Or your relevant index pattern
+      term_field: "machine.os.keyword"       # The field to aggregate on
+      filter_query: "{\"range\": {\"timestamp\": {\"format\": \"strict_date_optional_time||epoch_millis\", \"gte\": \"now-15m/m\", \"lte\": \"now/m\"}}}"
+      size: 10                               # Limit to the top 10 terms (OS keywords)
+    labels:
+      term_label: "os_keyword"              # Prometheus label for the OS keyword value
+      static:
+        dataset: "kibana_sample_data"       # Example static label
+        time_window: "15m"                  # Add context about the time range used

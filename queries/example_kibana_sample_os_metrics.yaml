@@ -1,0 +1,34 @@
+metrics:
+  - name: "os_count_win8_kibana_logs" # Descriptive name
+    help: "Count of sample logs from 'win 8' OS within a specific time range"
+    query:
+      indices: ["kibana_sample_data_logs"] # Target index
+      term_field: "machine.os.keyword"     # Field to aggregate on (we expect only one term due to filter)
+      filter_query: > # Use > for multi-line string, contains the bool filter as a JSON string
+        {
+          "bool": {
+            "filter": [
+              {
+                "range": {
+                  "timestamp": {
+                    "format": "strict_date_optional_time",
+                    "gte": "2025-04-05T11:52:39.771Z",
+                    "lte": "2025-04-05T12:07:39.771Z"
+                  }
+                }
+              },
+              {
+                "match_phrase": {
+                  "machine.os.keyword": "win 8"
+                }
+              }
+            ]
+          }
+        }
+      size: 1 # Optimization: We only expect the "win 8" bucket due to the filter
+      # min_doc_count: 0 # Optional: Set to 0 if you want the metric with value 0 even if no matches found
+    labels:
+      term_label: "os" # The Prometheus label for the term value (will be "win 8")
+      static:
+        dataset: "kibana_sample_data"
+        # Add any other relevant static context
