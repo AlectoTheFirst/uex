@@ -26,6 +26,7 @@ jobs:
 
       - name: Build binary
         run: go build -o uex ./cmd/uex
+        working-directory: ./
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
