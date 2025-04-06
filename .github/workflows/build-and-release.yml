@@ -28,10 +28,15 @@ jobs:
         run: go build -o uex ./cmd/uex
 
       - name: Upload build artifact
-        uses: actions/upload-artifact@v3.1.0
+        uses: actions/upload-artifact@v4
         with:
           name: uex-binary
           path: ./uex
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+          overwrite: true
+          include-hidden-files: false
 
   release:
     name: Release
