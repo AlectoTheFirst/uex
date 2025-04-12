@@ -13,17 +13,19 @@ Feel free to contribute!
 
 ```
 
-A Prometheus exporter written in Go that generates metrics from Elasticsearch `terms` aggregations based on flexible YAML configurations.
+A Prometheus exporter written in Go that generates metrics from Elasticsearch data based on flexible YAML configurations. It supports both terms aggregations and direct search queries.
 
 This exporter allows you to define custom metrics derived from your Elasticsearch data without relying on Elasticsearch's built-in Watcher or complex scripting within Elasticsearch itself.
 
 ## Features
 
 * **Terms Aggregation Metrics:** Executes Elasticsearch `terms` aggregations and exposes the bucket counts as Prometheus Gauge metrics.
+* **Direct Search Metrics:** Performs direct search queries and creates metrics from the results without requiring aggregation.
 * **YAML Configuration:** Define metrics, target indices, aggregation fields, filters, and labels in simple YAML files.
 * **Multiple Query Files:** Load metric definitions from multiple `.yaml` files within a specified directory.
 * **Decoupled Connection Config:** Configure Elasticsearch connection details via command-line flags or environment variables, separate from query definitions (ideal for GitOps and security).
 * **Dynamic Label Mapping:** Map the term value from the aggregation bucket directly to a configurable Prometheus label.
+* **Source Field Labels:** Extract values from document source fields and map them to Prometheus labels.
 * **Static Labels:** Add fixed labels to metrics for environment identification, service names, etc.
 * **Query Filtering:** Apply Elasticsearch Query DSL (JSON string) or Lucene `query_string` filters to narrow down documents before aggregation.
 * **Aggregation Options:** Configure `size` (number of buckets), `missing` value handling, and `min_doc_count`.
@@ -38,7 +40,7 @@ This exporter allows you to define custom metrics derived from your Elasticsearc
 
 1. **Clone the repository:**
    ```bash
-   git clone https://github.com/AlectoTheFirst/uex.git
+   git clone 
    cd uex
    ```
 
@@ -93,23 +95,31 @@ Each YAML file must contain a top-level `metrics:` key, which holds a list of me
 
 ```yaml
 metrics:
+  # Example 1: Terms Aggregation with source fields for additional labeling
   - name: "myapp_http_requests_by_status" # Prometheus metric name (required)
     help: "Total HTTP requests to myapp by status code" # Prometheus help string (required)
     # type: gauge # Optional, defaults to "gauge", currently only type supported.
     query:
       indices: ["myapp-logs-*", "other-logs-*"] # List of index patterns (required)
-      term_field: "http.response.status_code"   # Field for terms aggregation (required)
+      term_field: "http.response.status_code"   # Field for terms aggregation (determines grouping)
       filter_query: '{"term": {"service.name": "my-web-app"}}' # Optional: JSON Query DSL filter string
       # filter_query_string: "service.environment:production AND status:active" # Optional: Lucene query_string filter (use only one filter type)
       size: 20                # Optional: Max terms/buckets to return (default: 10)
       missing: "unknown"      # Optional: Value for documents missing the term_field
       min_doc_count: 1        # Optional: Minimum doc count for a bucket (default: 1)
+      source_fields: ["@timestamp", "http.request.method"] # Extract these fields from documents for labels
     labels:
       term_label: "status_code" # Prometheus label name for the term value (required)
+      source_labels:            # Map source fields to labels
+        - field: "@timestamp"   # Field to extract from document
+          label: "last_seen"    # Label name in Prometheus
+        - field: "http.request.method"
+          label: "method"
       static:                   # Optional: Map of static labels added to every metric from this definition
         environment: "production"
         service: "my-web-app"
 
+  # Example 2: Simple terms aggregation
   - name: "app_errors_by_type"
     help: "Application errors categorized by error type"
     query:
@@ -120,6 +130,30 @@ metrics:
       term_label: "error_type"
       static:
         app_version: "1.2.3"
+        
+  # Example 3: Direct search query (no aggregation)
+  - name: "critical_errors_direct"
+    help: "Individual critical error events"
+    query:
+      indices: ["app-errors-*"]
+      # No term_field means this is a direct search query
+      filter_query: '{"bool": {"must": [{"term": {"severity": "critical"}}, {"range": {"@timestamp": {"gte": "now-1d"}}}]}}'
+      size: 20  # Maximum number of hits to process
+      source_fields: ["error.message", "error.type", "host.name", "@timestamp"]
+    labels:
+      # No term_label needed since we're not doing aggregation
+      source_labels:
+        - field: "error.message"
+          label: "message"
+        - field: "error.type"
+          label: "type"
+        - field: "host.name"
+          label: "host"
+        - field: "@timestamp"
+          label: "timestamp"
+      static:
+        environment: "production"
+        monitored: "true"
 
 # You can have multiple metric definitions in one file
 # and multiple files in the queries directory.
@@ -129,14 +163,24 @@ metrics:
 
 * **name**: The base name for the Prometheus metric (will be prefixed with `uex_`). Must follow Prometheus naming rules.
 * **help**: The metric's help text in Prometheus.
+
+### Query Configuration
+
 * **query.indices**: A list of index patterns to query against.
-* **query.term_field**: The field in your Elasticsearch documents to perform the terms aggregation on. The values of this field will become the `term_label` values in Prometheus.
-* **query.filter_query**: An optional filter written as a JSON string representing an Elasticsearch Query DSL object. Applied before aggregation.
-* **query.filter_query_string**: An optional filter written as a Lucene query string. Applied before aggregation. Use either `filter_query` OR `filter_query_string`, not both.
-* **query.size**: The maximum number of unique terms (buckets) to retrieve from Elasticsearch. Affects performance and memory.
-* **query.missing**: If specified, documents that do not have the `term_field` will be grouped under this value in a separate bucket.
-* **query.min_doc_count**: Only return term buckets that contain at least this many documents.
-* **labels.term_label**: The name of the Prometheus label that will hold the value of the `term_field` from the aggregation bucket key.
+* **query.term_field**: The field in your Elasticsearch documents to perform the terms aggregation on. If specified, the exporter runs a terms aggregation query. If omitted, the exporter runs a direct search query.
+* **query.filter_query**: An optional filter written as a JSON string representing an Elasticsearch Query DSL object. Applied before aggregation or search.
+* **query.filter_query_string**: An optional filter written as a Lucene query string. Applied before aggregation or search. Use either `filter_query` OR `filter_query_string`, not both.
+* **query.size**: For terms aggregations: the maximum number of unique terms (buckets) to retrieve. For direct searches: the maximum number of documents to retrieve. Affects performance and memory.
+* **query.missing**: If specified, documents that do not have the `term_field` will be grouped under this value in a separate bucket (only applies to terms aggregations).
+* **query.min_doc_count**: Only return term buckets that contain at least this many documents (only applies to terms aggregations).
+* **query.source_fields**: List of fields to extract from the document _source. For terms aggregations, these fields are retrieved using a top_hits sub-aggregation. For direct searches, these limit the fields returned in the response.
+
+### Label Configuration
+
+* **labels.term_label**: The name of the Prometheus label that will hold the value of the `term_field` from the aggregation bucket key. Required for terms aggregations, not used for direct searches.
+* **labels.source_labels**: Array of mappings from Elasticsearch document fields to Prometheus labels:
+  * **field**: The field name in the Elasticsearch document to extract (can use dot notation for nested fields)
+  * **label**: The Prometheus label name to assign the field's value to
 * **labels.static**: A map of key-value pairs that will be added as static labels to all time series generated by this metric definition.
 
 ## Running the Exporter
@@ -185,10 +229,13 @@ Test mode allows you to verify connection and query execution without starting t
 
 For each definition in your YAML configuration files, `uex` generates a Prometheus Gauge metric named `uex_<metric_definition_name>`.
 
+#### Terms Aggregation Metrics
+
 **Value**: The `doc_count` from the Elasticsearch terms aggregation bucket.
 
 **Labels**:
 * The label specified by `labels.term_label` in your config, with its value set to the term from the ES bucket key.
+* Any labels defined in `labels.source_labels` populated with values from the document's source fields.
 * All labels defined in the `labels.static` map for that metric definition.
 
 **Example**:
@@ -197,10 +244,27 @@ Using the `myapp_http_requests_by_status` example from the config section, you m
 ```
 # HELP uex_myapp_http_requests_by_status Total HTTP requests to myapp by status code
 # TYPE uex_myapp_http_requests_by_status gauge
-uex_myapp_http_requests_by_status{environment="production",service="my-web-app",status_code="200"} 5432
-uex_myapp_http_requests_by_status{environment="production",service="my-web-app",status_code="404"} 123
-uex_myapp_http_requests_by_status{environment="production",service="my-web-app",status_code="500"} 45
-uex_myapp_http_requests_by_status{environment="production",service="my-web-app",status_code="unknown"} 10 # If 'missing: unknown' was used
+uex_myapp_http_requests_by_status{environment="production",method="GET",service="my-web-app",status_code="200"} 5432
+uex_myapp_http_requests_by_status{environment="production",method="POST",service="my-web-app",status_code="404"} 123
+```
+
+#### Direct Search Metrics
+
+**Value**: The count of matching documents with the same set of source field values and static labels.
+
+**Labels**:
+* Any labels defined in `labels.source_labels` populated with values from the document's source fields.
+* All labels defined in the `labels.static` map for that metric definition.
+
+**Example**:
+Using the `critical_errors_direct` example from the config section, you might see metrics like:
+
+```
+# HELP uex_critical_errors_direct Individual critical error events
+# TYPE uex_critical_errors_direct gauge
+uex_critical_errors_direct{environment="production",host="app-server-01",message="Connection refused",monitored="true",type="connection_error"} 3
+uex_critical_errors_direct{environment="production",host="app-server-02",message="Out of memory",monitored="true",type="memory_error"} 1
+uex_critical_errors_direct{environment="production",host="db-server-01",message="Disk full",monitored="true",type="storage_error"} 2
 ```
 
 ## Call Flow / Process Explanation
@@ -210,11 +274,15 @@ Understanding the internal flow helps with debugging and configuration:
 ### Startup (`cmd/uex/main.go`):
 
 1. Application entry point.
-2. Call `config.LoadConnectionConfig()` first: This defines all connection-related command-line flags using the flag package (e.g., `--elasticsearch.address`). It returns a `config.ConnectionConfig` struct initialized with default values.
-3. Call `flag.Parse()`: This parses the actual command-line arguments provided by the user, populating the variables associated with the flags (updating the `connCfg` struct where flags were passed).
-4. Call `config.ApplyEnvVarOverrides(connCfg)`: Checks environment variables (e.g., `ES_ADDRESS`). If a corresponding flag was not passed on the command line, the environment variable's value is applied to the `connCfg` struct.
-5. Call `config.FinalizeConfigValidation(connCfg)`: Performs validation checks on the now fully populated connection configuration (e.g., checks for conflicting auth methods).
-6. Handle `--test` mode if enabled (runs `runTestMode()` and exits).
+2. Set up logging with slog based on the specified log level and format.
+3. Register and parse flags using the spf13/pflag package (which extends standard flag package).
+4. Load connection configuration from both flags and environment variables with `config.LoadConnectionConfig()`.
+5. If test mode is enabled (`--test`), run `runTestMode()` function and exit.
+6. For normal operation, load metric definitions with `config.LoadQueryConfigs()`.
+7. Initialize Elasticsearch client with `elasticsearch.NewClient()`.
+8. Create and register the Prometheus exporter with `exporter.NewExporter()`.
+9. Set up HTTP server and handlers for metrics endpoint.
+10. Configure graceful shutdown handling for SIGINT/SIGTERM signals.
 
 ### Query Configuration Loading (`config.LoadQueryConfigs`):
 
@@ -222,52 +290,80 @@ Understanding the internal flow helps with debugging and configuration:
 2. Iterates through all `.yaml` and `.yml` files.
 3. Parses each file, expecting a `metrics:` list.
 4. For each metric definition found:
-   - Calls `metric.Validate()` to check for required fields, valid names, and apply defaults (e.g., size, type).
-   - Checks for duplicate metric name across all loaded files.
-5. Returns a slice of valid `config.MetricConfig` structs.
+   - Calls `metric.Validate()` to check for required fields, valid names, and apply defaults.
+   - Validates Prometheus naming rules for metrics and labels.
+   - Determines if it's a terms aggregation (has `term_field`) or direct search query (no `term_field`).
+   - Checks for proper label configuration based on query type.
+   - Checks for duplicate metric names across all loaded files.
+5. Returns a slice of validated `config.MetricConfig` structs.
 
 ### Elasticsearch Client Initialization (`elasticsearch.NewClient`):
 
-1. Uses the validated `connCfg` struct to configure the official `elastic/go-elasticsearch` client (addresses, auth, TLS settings, timeout).
-2. Optionally performs a Ping request if `healthCheck` is enabled.
+1. Configures the official Elastic client with connection details, authentication, and TLS settings.
+2. Configures transport settings including timeouts and TLS verification options.
+3. Optionally performs a health check ping if `healthCheck` is enabled.
+4. Returns a client wrapper that provides query building and execution functions.
 
 ### Exporter Initialization (`exporter.NewExporter`):
 
 1. Takes the ES client and the list of loaded `MetricConfig` structs.
-2. Iterates through each `MetricConfig`:
-   - Determines the required Prometheus label keys (the `term_label` plus all keys from static labels). Crucially, it establishes a fixed order for these labels.
-   - Creates a `prometheus.Desc` object for this metric. The `Desc` is a descriptor containing the fully qualified metric name (`uex_<name>`), help text, and the ordered list of variable label keys. These `Desc` objects are precomputed for efficiency.
-3. Creates `Desc` objects for the exporter's own metrics (`uex_up`, etc.).
+2. For each metric definition:
+   - Determines all required Prometheus label keys in a fixed order:
+     1. Term label (if using terms aggregation)
+     2. Source field labels (from document _source)
+     3. Static labels (alphabetically sorted for consistency)
+   - Creates a `prometheus.Desc` object for this metric with the ordered label keys.
+3. Creates descriptors for internal metrics (`uex_up`, `uex_scrape_error`, etc.).
+4. Returns an exporter that implements the Prometheus Collector interface.
 
-### HTTP Server Setup (`cmd/uex/main.go`):
+### HTTP Server Setup:
 
-1. Registers the created exporter instance with the `prometheus/client_golang` registry (`prometheus.MustRegister`).
-2. Sets up an HTTP server using `net/http`.
-3. Handles requests to the `/metrics` path using `promhttp.Handler()`. This handler automatically calls the `Describe` and `Collect` methods of all registered collectors (including our exporter) when Prometheus scrapes the endpoint.
-4. Sets up graceful shutdown handling for SIGINT/SIGTERM.
+1. Registers the exporter with Prometheus client registry.
+2. Sets up an HTTP server with appropriate timeouts.
+3. Configures TLS and authentication if specified in `web.config.file`.
+4. Handles requests to the `/metrics` path using the Prometheus handler.
+5. Sets up graceful shutdown for clean termination.
 
 ### Prometheus Scrape Cycle (`exporter.Collect`):
 
-1. When Prometheus scrapes `/metrics`, the `promhttp.Handler()` calls the `Collect` method of our exporter.
-2. `Collect` receives a channel (`ch`) to send metrics back to Prometheus.
-3. Sets an overall timeout for the scrape operation (slightly less than the ES query timeout).
-4. Launches a separate goroutine for each `MetricConfig` defined in the configuration to perform queries concurrently.
+1. When Prometheus scrapes the `/metrics` endpoint, the `Collect` method is called.
+2. Sets a timeout context for the scrape operation.
+3. Initializes `overallSuccess` status to 1.0 (success).
+4. Launches a separate goroutine for each metric definition to run queries concurrently.
 5. Inside each goroutine:
-   - Calls `elasticsearch.buildQuery()` to construct the JSON query body based on the `MetricConfig`.
-   - Calls `elasticsearch.RunTermsQuery()` to execute the search request against Elasticsearch using the pre-initialized client and the scrape context (with timeout).
-   - Handles potential errors from the query. If an error occurs, it sends a `uex_scrape_error{metric_name="<name>"} 1` metric.
-   - If the query is successful:
-     - Sends the `uex_query_duration_seconds{metric_name="<name>}` metric.
-     - Parses the aggregations part of the Elasticsearch JSON response, looking for the predefined aggregation name (`uex_aggregation`).
-     - Unmarshals the aggregation result into `TermsAggregationResult`.
-     - Iterates through each bucket in the aggregation result.
-     - For each bucket:
-       - Gets the term value (`bucket.Key`) and document count (`bucket.DocCount`).
-       - Constructs a slice of label values. Crucially, the order of values in this slice MUST exactly match the order of label keys defined in the `prometheus.Desc` created during `NewExporter`.
-       - Calls `prometheus.NewConstMetric()` with the precomputed `Desc`, gauge type, the `doc_count` as the value, and the ordered label values.
-       - Sends the resulting `prometheus.Metric` object over the channel (`ch`).
-6. The main `Collect` function waits for all goroutines to complete using a `sync.WaitGroup`.
-7. Finally, `Collect` sends the `uex_up` and `uex_scrape_duration_seconds` metrics over the channel (`ch`).
+   - Calls `elasticsearch.RunQuery()` which handles both aggregation and direct search queries.
+   - Reports errors and query duration via internal metrics.
+   - For successful queries, processes results based on query type:
+
+#### For Terms Aggregations (`processAggregationResult`):
+
+1. Extracts the aggregation results from the response.
+2. For each bucket:
+   - Gets the term value and document count.
+   - Extracts source field values from the top_hits sub-aggregation if requested.
+   - Builds a slice of label values in the correct order (term, source, static).
+   - Sends a metric with the bucket's document count as the value.
+
+#### For Direct Search Queries (`processDirectSearchResult`):
+
+1. Processes hit documents from the search results.
+2. For each hit:
+   - Extracts requested field values from the document's _source.
+   - Builds labels from source fields and static labels.
+   - Aggregates hits with identical label combinations to generate counts.
+3. For each unique label combination, sends a metric with the count of matching documents.
+
+6. Waits for all goroutines to complete using a WaitGroup.
+7. Reports overall scrape status (`uex_up`) and duration metrics.
+
+### Test Mode Processing:
+
+1. Performs the same configuration loading and client initialization as normal mode.
+2. For a specified query (or all queries if not specified):
+   - Executes the query against Elasticsearch.
+   - Prints detailed results to the console instead of exposing metrics.
+   - Shows query details, execution time, hit counts, and for aggregations, the bucket data.
+   - For direct searches, shows document source fields for inspection.
 
 ## Contributing
 
