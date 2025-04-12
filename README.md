@@ -6,8 +6,6 @@
 # Disclaimer
 
 This project is a personal hack project created in my free time as an Elasticsearch and Prometheus enthusiast.
-It was primarily developed with the assistance of LLMs (Gemini 2.5 and GitHub Copilot).
-It took roughly 2 hours to develop. This application may contain bugs, performance issues, or security vulnerabilities.
 Use at your own risk in non-critical environments only.
 Feel free to contribute!
 
