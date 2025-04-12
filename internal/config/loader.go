@@ -1,144 +1,189 @@
 package config
 
 import (
-	"flag"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/spf13/pflag"
+	"github.com/spf13/pflag" // Using pflag as in the original code
 	"gopkg.in/yaml.v3"
 )
 
-// Added a check to prevent redefinition of flags
-var flagsDefined bool
+// Connection flag variables (will be populated by pflag)
+var (
+	esAddresses          *[]string
+	esUsername           *string
+	esPassword           *string
+	esAPIKey             *string
+	esCloudID            *string
+	esTimeout            *time.Duration
+	esHealthCheck        *bool
+	esInsecureSkipVerify *bool
+)
 
-// Updated `LoadConnectionConfig` to return the existing configuration if flags are already defined
-var existingConfig *ConnectionConfig
-
-// LoadConnectionConfig defines connection flags and loads overrides from environment variables.
-// Flag parsing must happen in main() *after* calling this function to define the flags.
-// It returns a pointer to a ConnectionConfig struct populated with defaults or flag definitions,
-// ready to be modified by flag parsing and environment variable overlays.
-func LoadConnectionConfig() (*ConnectionConfig, error) {
-	if flagsDefined {
-		return existingConfig, nil // Return the existing configuration
-	}
-	flagsDefined = true
-
-	cfg := &ConnectionConfig{} // Start with an empty config
-
-	// Define flags using pflag
-	pflag.StringSliceVar(&cfg.Addresses, "elasticsearch.address", []string{"http://localhost:9200"}, "Elasticsearch node addresses (comma-separated URLs)")
-	pflag.StringVar(&cfg.Username, "elasticsearch.username", "", "Elasticsearch basic authentication username")
-	pflag.StringVar(&cfg.Password, "elasticsearch.password", "", "Elasticsearch basic authentication password")
-	pflag.StringVar(&cfg.APIKey, "elasticsearch.api-key", "", "Elasticsearch API Key (Base64 encoded 'id:api_key')")
-	pflag.StringVar(&cfg.CloudID, "elasticsearch.cloud-id", "", "Elasticsearch Cloud ID")
-	pflag.DurationVar(&cfg.Timeout, "elasticsearch.timeout", DefaultTimeout, "Elasticsearch request timeout")
-	pflag.BoolVar(&cfg.HealthCheck, "elasticsearch.healthcheck", true, "Perform health check on Elasticsearch connection startup")
-	pflag.BoolVar(&cfg.InsecureSkipVerify, "elasticsearch.tls.insecure-skip-verify", false, "Skip TLS certificate verification")
-
-	existingConfig = cfg // Cache the configuration
-	return cfg, nil // Return the config struct with defaults/flag definitions
+// RegisterConnectionFlags defines the command-line flags related to Elasticsearch connection.
+// This should be called *before* pflag.Parse().
+func RegisterConnectionFlags() {
+	// Use default values here
+	esAddresses = pflag.StringSlice("elasticsearch.address", []string{"http://localhost:9200"}, "Elasticsearch node addresses (comma-separated URLs, env: ES_ADDRESS)")
+	esUsername = pflag.String("elasticsearch.username", "", "Elasticsearch basic authentication username (env: ES_USERNAME)")
+	esPassword = pflag.String("elasticsearch.password", "", "Elasticsearch basic authentication password (env: ES_PASSWORD)")
+	esAPIKey = pflag.String("elasticsearch.api-key", "", "Elasticsearch API Key (Base64 encoded 'id:api_key', env: ES_API_KEY)")
+	esCloudID = pflag.String("elasticsearch.cloud-id", "", "Elasticsearch Cloud ID (env: ES_CLOUD_ID)")
+	esTimeout = pflag.Duration("elasticsearch.timeout", DefaultTimeout, "Elasticsearch request timeout (env: ES_TIMEOUT)")
+	esHealthCheck = pflag.Bool("elasticsearch.healthcheck", true, "Perform health check on Elasticsearch connection startup (env: ES_HEALTHCHECK)")
+	esInsecureSkipVerify = pflag.Bool("elasticsearch.tls.insecure-skip-verify", false, "Skip TLS certificate verification (env: ES_TLS_INSECURE_SKIP_VERIFY)")
 }
 
-// ApplyEnvVarOverrides updates the ConnectionConfig with environment variable values
-// ONLY if the corresponding flag was not set (i.e., still has its default value).
-// This function should be called AFTER flag.Parse() in main.go.
-func ApplyEnvVarOverrides(cfg *ConnectionConfig) {
+// LoadConnectionConfig creates a ConnectionConfig based on flags and environment variables.
+// This must be called *after* pflag.Parse() has been called in main.go.
+func LoadConnectionConfig() (*ConnectionConfig, error) {
+	// Start with default values (or values potentially set by flags already)
+	cfg := &ConnectionConfig{
+		Addresses:          *esAddresses,
+		Username:           *esUsername,
+		Password:           *esPassword,
+		APIKey:             *esAPIKey,
+		CloudID:            *esCloudID,
+		Timeout:            *esTimeout,
+		HealthCheck:        *esHealthCheck,
+		InsecureSkipVerify: *esInsecureSkipVerify,
+	}
 
-	// Check environment variables ONLY if the flag is still set to its default.
-	// This requires knowing the default values.
+	// Apply environment variable overrides *if* the corresponding flag was NOT set.
+	// We check this by comparing the flag value to its default value *after* parsing.
+	applyEnvVarOverrides(cfg) // Apply env vars based on parsed flags/defaults
 
-	// Check Addresses (more complex due to slice default)
-	addressesFlag := flag.Lookup("elasticsearch.address")
-	if addressesFlag != nil && !isFlagPassed(addressesFlag.Name) { // Check if the flag was actually passed on the command line
-		if addressesEnv := os.Getenv("ES_ADDRESS"); addressesEnv != "" {
-			cfg.Addresses = strings.Split(addressesEnv, ",")
-		}
+	// Final validation after flags and env vars are considered
+	if err := validateConnectionConfig(cfg); err != nil {
+		return nil, err
 	}
-	// A simpler check if we assume any non-empty env var overrides the default value:
-	// isDefaultAddr := len(cfg.Addresses) == 1 && cfg.Addresses[0] == "http://localhost:9200"
-	// if isDefaultAddr {
-	//     if addressesEnv := os.Getenv("ES_ADDRESS"); addressesEnv != "" {
-	//         cfg.Addresses = strings.Split(addressesEnv, ",")
-	//     }
-	// }
 
+	return cfg, nil
+}
 
-	if !isFlagPassed("elasticsearch.username") {
-		if usernameEnv := os.Getenv("ES_USERNAME"); usernameEnv != "" {
-			cfg.Username = usernameEnv
-		}
-	}
-	if !isFlagPassed("elasticsearch.password") {
-		if passwordEnv := os.Getenv("ES_PASSWORD"); passwordEnv != "" {
-			cfg.Password = passwordEnv
-		}
-	}
-	if !isFlagPassed("elasticsearch.api-key") {
-		if apiKeyEnv := os.Getenv("ES_API_KEY"); apiKeyEnv != "" {
-			cfg.APIKey = apiKeyEnv
-		}
-	}
-	if !isFlagPassed("elasticsearch.cloud-id") {
-		if cloudIDEnv := os.Getenv("ES_CLOUD_ID"); cloudIDEnv != "" {
-			cfg.CloudID = cloudIDEnv
-		}
-	}
-	if !isFlagPassed("elasticsearch.timeout") {
-		if timeoutStr := os.Getenv("ES_TIMEOUT"); timeoutStr != "" {
-			if duration, err := time.ParseDuration(timeoutStr); err == nil {
-				cfg.Timeout = duration
-			} else {
-				fmt.Printf("Warning: Invalid ES_TIMEOUT format: %v. Using flag/default value %s\n", err, cfg.Timeout)
+// applyEnvVarOverrides updates the ConnectionConfig with environment variable values.
+// This version assumes standard precedence: Flag > Env Var > Default.
+// It modifies the passed cfg based on environment variables.
+func applyEnvVarOverrides(cfg *ConnectionConfig) {
+	if addressesEnv := os.Getenv("ES_ADDRESS"); addressesEnv != "" {
+		// Check if flag was set by comparing to default. This is imperfect but common.
+		// A better way requires tracking flag sources, which pflag can do but adds complexity.
+		// Simple approach: If flag has default AND env var exists, use env var.
+		// If flag was set to non-default, flag takes precedence (already done by pflag parsing).
+		// This requires checking the *initial* default value.
+		defaultAddr := []string{"http://localhost:9200"} // Hardcoding default here, less ideal
+		isDefaultAddr := len(cfg.Addresses) == len(defaultAddr)
+		if isDefaultAddr {
+			for i, v := range cfg.Addresses {
+				if v != defaultAddr[i] {
+					isDefaultAddr = false
+					break
+				}
 			}
 		}
+		if isDefaultAddr {
+			cfg.Addresses = strings.Split(addressesEnv, ",")
+			slog.Debug("Applying ES_ADDRESS from environment variable", "value", cfg.Addresses)
+		}
 	}
-	// Booleans: Rely on flags; env var handling for booleans is often ambiguous.
-	// If env var override is needed, add explicit checks like:
-	// if !isFlagPassed("elasticsearch.healthcheck") {
-	//     if hcEnv := os.Getenv("ES_HEALTHCHECK"); hcEnv != "" {
-	//          // parse hcEnv (e.g., "true", "1", "false", "0")
-	//     }
-	// }
+
+	if usernameEnv := os.Getenv("ES_USERNAME"); usernameEnv != "" && cfg.Username == "" {
+		cfg.Username = usernameEnv
+		slog.Debug("Applying ES_USERNAME from environment variable")
+	}
+	if passwordEnv := os.Getenv("ES_PASSWORD"); passwordEnv != "" && cfg.Password == "" {
+		cfg.Password = passwordEnv
+		slog.Debug("Applying ES_PASSWORD from environment variable")
+	}
+	if apiKeyEnv := os.Getenv("ES_API_KEY"); apiKeyEnv != "" && cfg.APIKey == "" {
+		cfg.APIKey = apiKeyEnv
+		slog.Debug("Applying ES_API_KEY from environment variable")
+	}
+	if cloudIDEnv := os.Getenv("ES_CLOUD_ID"); cloudIDEnv != "" && cfg.CloudID == "" {
+		cfg.CloudID = cloudIDEnv
+		slog.Debug("Applying ES_CLOUD_ID from environment variable")
+	}
+
+	if timeoutStr := os.Getenv("ES_TIMEOUT"); timeoutStr != "" && cfg.Timeout == DefaultTimeout {
+		if duration, err := time.ParseDuration(timeoutStr); err == nil {
+			cfg.Timeout = duration
+			slog.Debug("Applying ES_TIMEOUT from environment variable", "value", cfg.Timeout)
+		} else {
+			slog.Warn("Invalid duration format in environment variable ES_TIMEOUT", "value", timeoutStr, "error", err)
+		}
+	}
+
+	if healthCheckStr := os.Getenv("ES_HEALTHCHECK"); healthCheckStr != "" && cfg.HealthCheck == true { // Default is true
+		if hc, err := parseBoolEnvVar(healthCheckStr); err == nil {
+			cfg.HealthCheck = hc
+			slog.Debug("Applying ES_HEALTHCHECK from environment variable", "value", cfg.HealthCheck)
+		} else {
+			slog.Warn("Invalid boolean format in environment variable ES_HEALTHCHECK", "value", healthCheckStr, "error", err)
+		}
+	}
+
+	if skipVerifyStr := os.Getenv("ES_TLS_INSECURE_SKIP_VERIFY"); skipVerifyStr != "" && cfg.InsecureSkipVerify == false { // Default is false
+		if sv, err := parseBoolEnvVar(skipVerifyStr); err == nil {
+			cfg.InsecureSkipVerify = sv
+			slog.Debug("Applying ES_TLS_INSECURE_SKIP_VERIFY from environment variable", "value", cfg.InsecureSkipVerify)
+		} else {
+			slog.Warn("Invalid boolean format in environment variable ES_TLS_INSECURE_SKIP_VERIFY", "value", skipVerifyStr, "error", err)
+		}
+	}
 }
 
-// FinalizeConfigValidation performs validation checks that should happen *after*
-// flags have been parsed and environment variables applied.
-func FinalizeConfigValidation(cfg *ConnectionConfig) error {
+// parseBoolEnvVar parses common boolean string representations.
+func parseBoolEnvVar(val string) (bool, error) {
+	lowerVal := strings.ToLower(val)
+	if lowerVal == "true" || lowerVal == "1" || lowerVal == "yes" || lowerVal == "on" {
+		return true, nil
+	}
+	if lowerVal == "false" || lowerVal == "0" || lowerVal == "no" || lowerVal == "off" {
+		return false, nil
+	}
+	return false, fmt.Errorf("invalid boolean string: %q", val)
+}
+
+
+// validateConnectionConfig performs validation checks *after* flags and env vars are resolved.
+func validateConnectionConfig(cfg *ConnectionConfig) error {
 	// Basic validation
 	if len(cfg.Addresses) == 0 && cfg.CloudID == "" {
 		return fmt.Errorf("elasticsearch connection requires at least one address via --elasticsearch.address/ES_ADDRESS or Cloud ID via --elasticsearch.cloud-id/ES_CLOUD_ID")
 	}
+	if len(cfg.Addresses) > 0 && cfg.CloudID != "" {
+		// Client library usually prefers CloudID if both are set, but warn user.
+		slog.Warn("Both elasticsearch.address and elasticsearch.cloud-id are specified; Cloud ID will likely be used by the client library.")
+	}
 
 	// Validate authentication methods
 	authMethods := 0
-	hasBasicAuth := cfg.Username != "" && cfg.Password != ""
+	hasBasicAuth := cfg.Username != "" || cfg.Password != "" // User might provide only one, treat as intent
 	hasApiKey := cfg.APIKey != ""
 
 	if hasBasicAuth {
+		if cfg.Username == "" || cfg.Password == "" {
+			// Require both for basic auth
+			return fmt.Errorf("basic authentication requires both --elasticsearch.username/ES_USERNAME and --elasticsearch.password/ES_PASSWORD")
+		}
 		authMethods++
 	}
 	if hasApiKey {
 		authMethods++
 	}
 
-	// CloudID can coexist with Basic Auth OR ApiKey, but not both Basic and ApiKey together
-	if hasBasicAuth && hasApiKey {
-		// This combination is never allowed
-		return fmt.Errorf("cannot use both Basic Authentication (username/password) and API Key authentication together")
+	// Cannot use multiple *explicit* auth methods (Basic vs APIKey).
+	// CloudID often handles its own auth or can be combined with APIKey/Basic by the client lib.
+	if authMethods > 1 {
+		return fmt.Errorf("cannot use multiple authentication methods (basic auth, api key) simultaneously")
 	}
-
-	// If CloudID is not present, ensure at most one auth method is used.
-	// (The check above already covers the case where both are present).
-	// No extra check needed here based on the previous one.
 
 	return nil
 }
-
 
 // LoadQueryConfigs loads metric definitions from all YAML files in a directory.
 func LoadQueryConfigs(dirPath string) ([]MetricConfig, error) {
@@ -152,76 +197,97 @@ func LoadQueryConfigs(dirPath string) ([]MetricConfig, error) {
 	}
 
 	foundYaml := false
+	fileLoadErrors := 0
+	metricParseErrors := 0
+	duplicateMetrics := 0
+
 	for _, file := range files {
 		if file.IsDir() {
-			continue
+			continue // Skip directories
 		}
+
 		fileName := file.Name()
-		if strings.HasSuffix(fileName, ".yaml") || strings.HasSuffix(fileName, ".yml") {
-			foundYaml = true
-			filePath := filepath.Join(dirPath, fileName)
-			yamlFile, err := os.ReadFile(filePath)
-			if err != nil {
-				fmt.Printf("Warning: Failed to read query file %q: %v. Skipping file.\n", filePath, err)
-				continue // Skip this file, try others
+		if !strings.HasSuffix(fileName, ".yaml") && !strings.HasSuffix(fileName, ".yml") {
+			continue // Skip non-yaml files
+		}
+
+		foundYaml = true
+		filePath := filepath.Join(dirPath, fileName)
+		slog.Debug("Reading query config file", "path", filePath)
+
+		yamlFile, err := os.ReadFile(filePath)
+		if err != nil {
+			slog.Error("Failed to read query file, skipping", "path", filePath, "error", err)
+			fileLoadErrors++
+			continue // Skip this file, try others
+		}
+
+		var topLevel TopLevelMetrics
+		err = yaml.Unmarshal(yamlFile, &topLevel)
+		if err != nil {
+			slog.Error("Failed to parse YAML in file, skipping", "path", filePath, "error", err)
+			fileLoadErrors++
+			continue // Skip this file
+		}
+
+		slog.Debug("Processing metrics from file", "path", filePath, "count", len(topLevel.Metrics))
+		for i := range topLevel.Metrics {
+			// Operate on a pointer to allow Validate to modify (e.g., set defaults)
+			metric := &topLevel.Metrics[i]
+
+			// Validate and apply defaults for each metric definition
+			if err := metric.Validate(); err != nil {
+				slog.Error("Invalid metric definition, skipping metric",
+					"path", filePath,
+					"metric_name", metric.Name, // Use name even if invalid for logging
+					"error", err)
+				metricParseErrors++
+				continue // Skip invalid metric
 			}
 
-			var topLevel TopLevelMetrics
-			err = yaml.Unmarshal(yamlFile, &topLevel)
-			if err != nil {
-				fmt.Printf("Warning: Failed to parse YAML in file %q: %v. Skipping file.\n", filePath, err)
-				continue // Skip this file
+			// Check for duplicate metric names across all loaded files
+			if existingFile, exists := metricNames[metric.Name]; exists {
+				slog.Error("Duplicate metric name found, skipping definition",
+					"metric_name", metric.Name,
+					"file1", existingFile,
+					"file2", filePath)
+				duplicateMetrics++
+				continue // Skip duplicate metric
 			}
 
-			for i := range topLevel.Metrics {
-				metric := &topLevel.Metrics[i] // Get pointer for validation modifications
-
-				// Validate and apply defaults for each metric definition
-				if err := metric.Validate(); err != nil {
-					fmt.Printf("Warning: Invalid metric definition in file %q (name: %q): %v. Skipping metric.\n", filePath, metric.Name, err)
-					continue // Skip invalid metric
-				}
-
-				// Check for duplicate metric names across all loaded files
-				if existingFile, exists := metricNames[metric.Name]; exists {
-					fmt.Printf("Warning: Duplicate metric name %q found. Defined in %q and %q. Skipping definition from %q.\n",
-						metric.Name, existingFile, filePath, filePath)
-					continue // Skip duplicate metric
-				}
-
-				metricNames[metric.Name] = filePath // Record the name and origin
-				allMetrics = append(allMetrics, *metric) // Append the validated metric
-			}
+			metricNames[metric.Name] = filePath      // Record the name and origin
+			allMetrics = append(allMetrics, *metric) // Append the validated metric (dereference pointer)
+			slog.Debug("Successfully validated and added metric config", "name", metric.Name, "file", filePath)
 		}
 	}
 
+	// --- Logging Summary ---
 	if !foundYaml {
-		// It's not necessarily an error to find no YAML files, just maybe unexpected.
-		fmt.Printf("Warning: No .yaml or .yml files found in query config directory %q\n", dirPath)
+		slog.Warn("No .yaml or .yml files found in query config directory", "directory", dirPath)
+	}
+	if fileLoadErrors > 0 {
+		slog.Warn("Encountered errors reading/parsing some query config files", "count", fileLoadErrors, "directory", dirPath)
+	}
+	if metricParseErrors > 0 {
+		slog.Warn("Skipped some invalid metric definitions", "count", metricParseErrors, "directory", dirPath)
+	}
+	if duplicateMetrics > 0 {
+		slog.Warn("Skipped some duplicate metric name definitions", "count", duplicateMetrics, "directory", dirPath)
 	}
 
 	if len(allMetrics) > 0 {
-		fmt.Printf("Successfully loaded %d metric configuration(s) from %q\n", len(allMetrics), dirPath)
+		slog.Info("Successfully loaded metric configurations", "count", len(allMetrics), "directory", dirPath)
 	} else if foundYaml {
 		// Found YAML files but none contained valid, non-duplicate metrics
-		fmt.Printf("Warning: Found YAML file(s) in %q, but none contained valid metric definitions.\n", dirPath)
+		slog.Warn("Found YAML file(s) but none contained valid metric definitions", "directory", dirPath)
+	} else {
+		// No YAML files found and no metrics loaded
+		slog.Info("No metric configurations loaded", "directory", dirPath)
 	}
 
-
 	// Return successfully loaded metrics, even if it's an empty slice.
-	// An error is only returned if the directory itself couldn't be read.
+	// An error is only returned if the directory itself couldn't be read initially.
 	return allMetrics, nil
 }
 
-
-// isFlagPassed checks if a flag was explicitly passed on the command line.
-// Credit: https://stackoverflow.com/a/54747682
-func isFlagPassed(name string) bool {
-	found := false
-	flag.Visit(func(f *flag.Flag) {
-		if f.Name == name {
-			found = true
-		}
-	})
-	return found
-}
+// Note: Removed isFlagPassed function as the env var logic relies on defaults comparison now.
