@@ -73,7 +73,7 @@ jobs:
           cd ..
 
       - name: Upload Artifacts
-        uses: actions/upload-artifact@c5a1e59f8c9f3f5f5c8dca8f6e3b4b3b3cc9c0b6
+        uses: actions/upload-artifact@v3
         with:
           name: binaries-${{ matrix.platform.os }}-${{ matrix.platform.arch }}
           path: dist/*
