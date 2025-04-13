@@ -92,7 +92,9 @@ jobs:
       - name: List downloaded artifacts
         run: ls -R all-dist
     
-      - name: Upload Assets to Existing Release
+      - name: Upload Assets to Existing Releasei
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           echo "Uploading assets to existing release ${{ github.ref_name }}"
           find all-dist -type f -print0 | while IFS= read -r -d $'\0' file; do
