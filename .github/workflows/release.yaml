@@ -60,13 +60,13 @@ jobs:
           LDFLAGS="$LDFLAGS -X 'main.GoVersion=${GO_VERSION}'"
           
           echo "Building ${OUTPUT_PATH}..."
-          go build -v -trimpath -ldflags="${LDFLAGS}" -o "${OUTPUT_PATH}" ./cmd/velocloud-exporter
+          go build -v -trimpath -ldflags="${LDFLAGS}" -o "${OUTPUT_PATH}" ./cmd/uex
           echo "Binary built at ${OUTPUT_PATH}"
 
       - name: Generate Checksum
         run: |
           cd dist
-          BINARY_FILE=$(ls velocloud-exporter-${{ matrix.platform.os }}-${{ matrix.platform.arch }}*)
+          BINARY_FILE=$(ls uex-${{ matrix.platform.os }}-${{ matrix.platform.arch }}*)
           sha256sum "${BINARY_FILE}" > "${BINARY_FILE}.sha256"
           echo "Checksum generated for ${BINARY_FILE}"
           ls -l
@@ -81,7 +81,7 @@ jobs:
   create-release:
     name: Create GitHub Release
     needs: build-release
-    runs-on: ["azvision", "auto1"]
+    runs-on: ["ubuntu-latest"]
     if: startsWith(github.ref, 'refs/tags/')
     steps:
       - name: Download all artifacts
