@@ -69,46 +69,29 @@ func LoadConnectionConfig() (*ConnectionConfig, error) {
 // This version assumes standard precedence: Flag > Env Var > Default.
 // It modifies the passed cfg based on environment variables.
 func applyEnvVarOverrides(cfg *ConnectionConfig) {
-	if addressesEnv := os.Getenv("ES_ADDRESS"); addressesEnv != "" {
-		// Check if flag was set by comparing to default. This is imperfect but common.
-		// A better way requires tracking flag sources, which pflag can do but adds complexity.
-		// Simple approach: If flag has default AND env var exists, use env var.
-		// If flag was set to non-default, flag takes precedence (already done by pflag parsing).
-		// This requires checking the *initial* default value.
-		defaultAddr := []string{"http://localhost:9200"} // Hardcoding default here, less ideal
-		isDefaultAddr := len(cfg.Addresses) == len(defaultAddr)
-		if isDefaultAddr {
-			for i, v := range cfg.Addresses {
-				if v != defaultAddr[i] {
-					isDefaultAddr = false
-					break
-				}
-			}
-		}
-		if isDefaultAddr {
-			cfg.Addresses = strings.Split(addressesEnv, ",")
-			slog.Debug("Applying ES_ADDRESS from environment variable", "value", cfg.Addresses)
-		}
+	if addressesEnv := os.Getenv("ES_ADDRESS"); addressesEnv != "" && !flagChanged("elasticsearch.address") {
+		cfg.Addresses = splitAndTrimCommaSeparated(addressesEnv)
+		slog.Debug("Applying ES_ADDRESS from environment variable", "value", cfg.Addresses)
 	}
 
-	if usernameEnv := os.Getenv("ES_USERNAME"); usernameEnv != "" && cfg.Username == "" {
+	if usernameEnv := os.Getenv("ES_USERNAME"); usernameEnv != "" && !flagChanged("elasticsearch.username") {
 		cfg.Username = usernameEnv
 		slog.Debug("Applying ES_USERNAME from environment variable")
 	}
-	if passwordEnv := os.Getenv("ES_PASSWORD"); passwordEnv != "" && cfg.Password == "" {
+	if passwordEnv := os.Getenv("ES_PASSWORD"); passwordEnv != "" && !flagChanged("elasticsearch.password") {
 		cfg.Password = passwordEnv
 		slog.Debug("Applying ES_PASSWORD from environment variable")
 	}
-	if apiKeyEnv := os.Getenv("ES_API_KEY"); apiKeyEnv != "" && cfg.APIKey == "" {
+	if apiKeyEnv := os.Getenv("ES_API_KEY"); apiKeyEnv != "" && !flagChanged("elasticsearch.api-key") {
 		cfg.APIKey = apiKeyEnv
 		slog.Debug("Applying ES_API_KEY from environment variable")
 	}
-	if cloudIDEnv := os.Getenv("ES_CLOUD_ID"); cloudIDEnv != "" && cfg.CloudID == "" {
+	if cloudIDEnv := os.Getenv("ES_CLOUD_ID"); cloudIDEnv != "" && !flagChanged("elasticsearch.cloud-id") {
 		cfg.CloudID = cloudIDEnv
 		slog.Debug("Applying ES_CLOUD_ID from environment variable")
 	}
 
-	if timeoutStr := os.Getenv("ES_TIMEOUT"); timeoutStr != "" && cfg.Timeout == DefaultTimeout {
+	if timeoutStr := os.Getenv("ES_TIMEOUT"); timeoutStr != "" && !flagChanged("elasticsearch.timeout") {
 		if duration, err := time.ParseDuration(timeoutStr); err == nil {
 			cfg.Timeout = duration
 			slog.Debug("Applying ES_TIMEOUT from environment variable", "value", cfg.Timeout)
@@ -117,7 +100,7 @@ func applyEnvVarOverrides(cfg *ConnectionConfig) {
 		}
 	}
 
-	if healthCheckStr := os.Getenv("ES_HEALTHCHECK"); healthCheckStr != "" && cfg.HealthCheck == true { // Default is true
+	if healthCheckStr := os.Getenv("ES_HEALTHCHECK"); healthCheckStr != "" && !flagChanged("elasticsearch.healthcheck") {
 		if hc, err := parseBoolEnvVar(healthCheckStr); err == nil {
 			cfg.HealthCheck = hc
 			slog.Debug("Applying ES_HEALTHCHECK from environment variable", "value", cfg.HealthCheck)
@@ -126,7 +109,7 @@ func applyEnvVarOverrides(cfg *ConnectionConfig) {
 		}
 	}
 
-	if skipVerifyStr := os.Getenv("ES_TLS_INSECURE_SKIP_VERIFY"); skipVerifyStr != "" && cfg.InsecureSkipVerify == false { // Default is false
+	if skipVerifyStr := os.Getenv("ES_TLS_INSECURE_SKIP_VERIFY"); skipVerifyStr != "" && !flagChanged("elasticsearch.tls.insecure-skip-verify") {
 		if sv, err := parseBoolEnvVar(skipVerifyStr); err == nil {
 			cfg.InsecureSkipVerify = sv
 			slog.Debug("Applying ES_TLS_INSECURE_SKIP_VERIFY from environment variable", "value", cfg.InsecureSkipVerify)
@@ -147,7 +130,6 @@ func parseBoolEnvVar(val string) (bool, error) {
 	}
 	return false, fmt.Errorf("invalid boolean string: %q", val)
 }
-
 
 // validateConnectionConfig performs validation checks *after* flags and env vars are resolved.
 func validateConnectionConfig(cfg *ConnectionConfig) error {
@@ -290,4 +272,22 @@ func LoadQueryConfigs(dirPath string) ([]MetricConfig, error) {
 	return allMetrics, nil
 }
 
-// Note: Removed isFlagPassed function as the env var logic relies on defaults comparison now.
+func flagChanged(name string) bool {
+	if f := pflag.Lookup(name); f != nil {
+		return f.Changed
+	}
+	return false
+}
+
+func splitAndTrimCommaSeparated(value string) []string {
+	parts := strings.Split(value, ",")
+	trimmed := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if v := strings.TrimSpace(part); v != "" {
+			trimmed = append(trimmed, v)
+		}
+	}
+	return trimmed
+}
+
+// Note: Removed isFlagPassed helper in favor of pflag's flagChanged tracking.
