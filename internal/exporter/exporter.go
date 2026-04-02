@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -32,11 +33,6 @@ type Exporter struct {
 	scrapeDurDesc   *prometheus.Desc
 	esTookDesc      *prometheus.Desc
 	
-	// Add this field
-	overallSuccess  float64
-	
-	// Mutex specifically for updating the shared overallSuccess variable
-	successMutex    sync.Mutex
 }
 
 // NewExporter creates, configures, and returns a new Exporter.
@@ -152,8 +148,8 @@ func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
 // configured query and sends the resulting metrics to the channel ch.
 func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 	scrapeTimeStart := time.Now()
-	// Initialize the struct field
-	e.overallSuccess = 1.0
+	var overallSuccess atomic.Int64
+	overallSuccess.Store(1)
 
 	// Use a context for the entire scrape operation.
 	// Base timeout on ES client config, slightly less than Prometheus scrape timeout.
@@ -186,10 +182,7 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 			if !ok {
 				slog.Error("Internal error: Metric description not found during Collect. This should not happen.", "metric", mc.Name)
 				scrapeErr = 1.0
-				// Update overall success safely
-				e.successMutex.Lock()
-				e.overallSuccess = 0.0
-				e.successMutex.Unlock()
+				overallSuccess.Store(0)
 				// Still report the scrape error for this metric below
 			}
 
@@ -199,9 +192,7 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 			if err != nil {
 				slog.Error("Failed to run query or process response for metric", "metric", mc.Name, "error", err)
 				scrapeErr = 1.0
-				e.successMutex.Lock()
-				e.overallSuccess = 0.0
-				e.successMutex.Unlock()
+				overallSuccess.Store(0)
 				// No return here, report the error metric below
 			} else {
 				// Query succeeded, record 'took' time from response
@@ -222,7 +213,7 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 				isAggregation := mc.Query.TermField != ""
 
 				if isAggregation {
-					e.processAggregationResult(ch, mc, metricDesc, resp)
+					e.processAggregationResult(ch, mc, metricDesc, resp, &overallSuccess)
 				} else {
 					e.processDirectSearchResult(ch, mc, metricDesc, resp)
 				}
@@ -236,16 +227,16 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 	wg.Wait()
 
 	// --- Report overall scrape status and duration ---
-	ch <- prometheus.MustNewConstMetric(e.upDesc, prometheus.GaugeValue, e.overallSuccess)
+	ch <- prometheus.MustNewConstMetric(e.upDesc, prometheus.GaugeValue, float64(overallSuccess.Load()))
 	totalScrapeDuration := time.Since(scrapeTimeStart)
 	ch <- prometheus.MustNewConstMetric(e.scrapeDurDesc, prometheus.GaugeValue, totalScrapeDuration.Seconds())
 
-	slog.Info("Finished scraping all metrics", "duration_seconds", totalScrapeDuration.Seconds(), "overall_success", e.overallSuccess > 0.5)
+	slog.Info("Finished scraping all metrics", "duration_seconds", totalScrapeDuration.Seconds(), "overall_success", overallSuccess.Load() == 1)
 }
 
 
 // processAggregationResult handles the response from a terms aggregation query.
-func (e *Exporter) processAggregationResult(ch chan<- prometheus.Metric, mc config.MetricConfig, desc *prometheus.Desc, resp *internal_es.SearchResponse) {
+func (e *Exporter) processAggregationResult(ch chan<- prometheus.Metric, mc config.MetricConfig, desc *prometheus.Desc, resp *internal_es.SearchResponse, overallSuccess *atomic.Int64) {
 	// Find our specific aggregation in the response using the constant key
 	aggRaw, exists := resp.Aggregations[internal_es.AggregationNameForKey]
 	if !exists {
@@ -261,9 +252,7 @@ func (e *Exporter) processAggregationResult(ch chan<- prometheus.Metric, mc conf
 	if err := json.Unmarshal(aggRaw, &termsResult); err != nil {
 		slog.Error("Failed to unmarshal terms aggregation result", "metric", mc.Name, "error", err)
 		// Mark overall scrape as failed? Could argue query succeeded but parsing failed.
-		e.successMutex.Lock()
-		e.overallSuccess = 0.0
-		e.successMutex.Unlock()
+		overallSuccess.Store(0)
 		return
 	}
 
