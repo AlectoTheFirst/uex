@@ -202,6 +202,24 @@ func (mc *MetricConfig) Validate() error {
 		}
 	}
 
+	// --- Check for duplicate label names across all label types ---
+	allLabelNames := make(map[string]string) // name -> source description
+	if isAggregation && mc.Labels.TermLabel != "" {
+		allLabelNames[mc.Labels.TermLabel] = "term_label"
+	}
+	for _, sl := range mc.Labels.SourceLabels {
+		if src, exists := allLabelNames[sl.PromLabel]; exists {
+			return fmt.Errorf("duplicate label name %q in metric %q: used by both %s and source_labels (field %q)", sl.PromLabel, mc.Name, src, sl.SourceField)
+		}
+		allLabelNames[sl.PromLabel] = fmt.Sprintf("source_labels (field %q)", sl.SourceField)
+	}
+	for k := range mc.Labels.Static {
+		if src, exists := allLabelNames[k]; exists {
+			return fmt.Errorf("duplicate label name %q in metric %q: used by both %s and static labels", k, mc.Name, src)
+		}
+		allLabelNames[k] = "static labels"
+	}
+
 	// --- Apply Defaults ---
 	if mc.Query.Size == 0 {
 		mc.Query.Size = DefaultQuerySize
