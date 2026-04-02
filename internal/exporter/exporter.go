@@ -172,6 +172,12 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 
 		go func(mc config.MetricConfig) {
 			defer wg.Done() // Signal completion for this goroutine
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Error("Panic recovered in metric collection", "metric", mc.Name, "panic", r)
+					overallSuccess.Store(0)
+				}
+			}()
 
 			collectStartTime := time.Now()
 			var scrapeErr float64 = 0.0 // 0 = success for this specific metric config
@@ -201,10 +207,18 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 
 			// --- Report per-metric scrape status and duration ---
 			// Report scrape error status (0 or 1) for this specific metric config
-			ch <- prometheus.MustNewConstMetric(e.errorDesc, prometheus.GaugeValue, scrapeErr, mc.Name)
+			if m, err := prometheus.NewConstMetric(e.errorDesc, prometheus.GaugeValue, scrapeErr, mc.Name); err != nil {
+				slog.Error("Failed to create scrape_error metric", "metric", mc.Name, "error", err)
+			} else {
+				ch <- m
+			}
 			// Report Elasticsearch 'took' time if query was successful
 			if err == nil && resp != nil {
-				ch <- prometheus.MustNewConstMetric(e.esTookDesc, prometheus.GaugeValue, float64(tookMs)/1000.0, mc.Name)
+				if m, err := prometheus.NewConstMetric(e.esTookDesc, prometheus.GaugeValue, float64(tookMs)/1000.0, mc.Name); err != nil {
+					slog.Error("Failed to create query_duration metric", "metric", mc.Name, "error", err)
+				} else {
+					ch <- m
+				}
 			}
 
 
