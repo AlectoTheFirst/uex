@@ -2,6 +2,8 @@ module github.com/AlectoTheFirst/uex
 
 go 1.25.0
 
+toolchain go1.26.3
+
 require (
 	github.com/elastic/go-elasticsearch/v8 v8.17.1
 	github.com/prometheus/client_golang v1.21.1

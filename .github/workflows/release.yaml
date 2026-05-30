@@ -14,7 +14,7 @@ jobs:
     runs-on: ["ubuntu-latest"]
     strategy:
       matrix:
-        go-version: ['1.23']
+        go-version: ['1.26']
         platform:
           - { os: 'linux', arch: 'amd64' }
 
