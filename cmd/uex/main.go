@@ -20,6 +20,15 @@ import (
 	"github.com/spf13/pflag"
 )
 
+// Build information, injected via ldflags at build time.
+var (
+	Version   = "dev"
+	Revision  = "unknown"
+	Branch    = "unknown"
+	BuildDate = "unknown"
+	GoVersion = "unknown"
+)
+
 var (
 	// Web server flags
 	listenAddress = pflag.String("web.listen-address", ":9488", "Address to listen on for web interface and telemetry.")
@@ -36,15 +45,24 @@ var (
 	// Test mode flags
 	testQuery = pflag.String("test.query-name", "", "Run in test mode for a specific query name (or all if empty) and exit.")
 	testMode  = pflag.Bool("test", false, "Enable test mode. Connects to ES, runs queries, prints results, and exits.")
+
+	showVersion = pflag.Bool("version", false, "Print version information and exit.")
 )
 
 func main() {
 	// Register flags from config package *before* parsing
 	config.RegisterConnectionFlags()
-	// Register flags defined in main
-	pflag.CommandLine.AddFlagSet(pflag.CommandLine)
 
 	pflag.Parse() // Parse all defined flags
+
+	if *showVersion {
+		fmt.Printf("uex version %s\n", Version)
+		fmt.Printf("  revision:   %s\n", Revision)
+		fmt.Printf("  branch:     %s\n", Branch)
+		fmt.Printf("  build date: %s\n", BuildDate)
+		fmt.Printf("  go version: %s\n", GoVersion)
+		os.Exit(0)
+	}
 
 	// Setup logging as early as possible using a local function
 	setupLogging(*logLevel, *logFormat) // Call local setupLogging
