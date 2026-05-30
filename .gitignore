@@ -21,8 +21,8 @@ go.work
 # Environment variables file
 .env*
 
-# Build artifact
-uex
+# Build artifact (root binary only; anchored so it does not match the cmd/uex dir)
+/uex
 
 # AI/Claude working docs
 docs/superpowers/
