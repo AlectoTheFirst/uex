@@ -129,7 +129,6 @@ func main() {
 	}
 
 	// --- Start Server and Handle Shutdown ---
-	_, serverStopCtx := context.WithCancel(context.Background())
 	srvExit := make(chan error, 1)
 
 	go func() {
@@ -151,7 +150,6 @@ func main() {
 	case err := <-srvExit:
 		if err != nil && err != http.ErrServerClosed {
 			slog.Error("HTTP server unexpected exit", "error", err)
-			serverStopCtx()
 			os.Exit(1)
 		}
 		slog.Info("HTTP server stopped.")
@@ -168,7 +166,6 @@ func main() {
 
 		<-srvExit // Wait for ListenAndServe goroutine to exit
 		slog.Info("HTTP server stopped.")
-		serverStopCtx() // Signal context cancellation
 	}
 
 	slog.Info("Application shut down gracefully")

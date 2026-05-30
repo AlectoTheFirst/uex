@@ -1,6 +1,7 @@
 package exporter
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -187,9 +188,15 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 			metricDesc, ok := e.descs[mc.Name]
 			if !ok {
 				slog.Error("Internal error: Metric description not found during Collect. This should not happen.", "metric", mc.Name)
-				scrapeErr = 1.0
 				overallSuccess.Store(0)
-				// Still report the scrape error for this metric below
+				// Report the scrape error for this metric and stop: without a desc we
+				// cannot build data metrics, so skip the wasted ES round-trip.
+				if m, err := prometheus.NewConstMetric(e.errorDesc, prometheus.GaugeValue, 1.0, mc.Name); err != nil {
+					slog.Error("Failed to create scrape_error metric", "metric", mc.Name, "error", err)
+				} else {
+					ch <- m
+				}
+				return
 			}
 
 			slog.Debug("Collecting metric", "name", mc.Name)
@@ -263,7 +270,12 @@ func (e *Exporter) processAggregationResult(ch chan<- prometheus.Metric, mc conf
 	// Unmarshal the raw JSON into our specific TermsAggregationResult struct.
 	// This struct's Buckets field is []AggregationBucket, which includes SourceDoc.
 	var termsResult internal_es.TermsAggregationResult
-	if err := json.Unmarshal(aggRaw, &termsResult); err != nil {
+	// Decode with UseNumber so integer bucket keys larger than 2^53 (e.g. snowflake
+	// IDs, epoch-millis) are preserved as json.Number instead of being rounded
+	// through float64, which would corrupt the resulting Prometheus label values.
+	dec := json.NewDecoder(bytes.NewReader(aggRaw))
+	dec.UseNumber()
+	if err := dec.Decode(&termsResult); err != nil {
 		slog.Error("Failed to unmarshal terms aggregation result", "metric", mc.Name, "error", err)
 		// Mark overall scrape as failed? Could argue query succeeded but parsing failed.
 		overallSuccess.Store(0)

@@ -240,7 +240,7 @@ func isValidMetricName(name string) bool {
 
 func isValidLabelName(name string) bool {
 	// Prometheus convention: labels starting with __ are reserved.
-	if len(name) > 2 && name[:2] == "__" {
+	if strings.HasPrefix(name, "__") {
 		return false
 	}
 	return labelNameRE.MatchString(name)

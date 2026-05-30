@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -58,6 +59,11 @@ func NewClient(cfg *config.ConnectionConfig) (*Client, error) {
 				// MinVersion: tls.VersionTLS12, // Consider setting minimum TLS version
 			},
 			MaxIdleConnsPerHost:   10, // Reasonable default
+			// Bound concurrent connections per host so a scrape with many configured
+			// metrics (one ES request per metric) cannot open an unbounded number of
+			// connections at once. Requests beyond this cap block until one frees, and
+			// still honor the per-request context timeout.
+			MaxConnsPerHost:       50,
 			ResponseHeaderTimeout: cfg.Timeout,
 			// DialContext defaults are usually fine
 		},
@@ -125,7 +131,9 @@ func (c *Client) checkConnection(ctx context.Context) error {
 			// Fallback to raw response body if specific error structure not found/parsed
 			errMsg = fmt.Sprintf("%s, response_body=%s", errMsg, string(bodyBytes))
 		}
-		return fmt.Errorf(errMsg)
+		// errMsg is already fully formatted; use errors.New so any '%' in the
+		// remote-controlled ES response body is not interpreted as a format verb.
+		return errors.New(errMsg)
 	}
 
 	slog.Debug("Elasticsearch connectivity check successful", "status", res.Status())
@@ -209,7 +217,9 @@ func (c *Client) RunQuery(ctx context.Context, metricCfg *config.MetricConfig) (
 			// Fallback to raw response body
 			errMsg = fmt.Sprintf("%s, response_body=%s", errMsg, string(bodyBytes))
 		}
-		return nil, fmt.Errorf(errMsg)
+		// errMsg is already fully formatted; use errors.New so any '%' in the
+		// remote-controlled ES response body is not interpreted as a format verb.
+		return nil, errors.New(errMsg)
 	}
 
 	// Log non-fatal issues like timeouts or shard failures

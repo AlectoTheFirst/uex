@@ -70,8 +70,12 @@ func LoadConnectionConfig() (*ConnectionConfig, error) {
 // It modifies the passed cfg based on environment variables.
 func applyEnvVarOverrides(cfg *ConnectionConfig) {
 	if addressesEnv := os.Getenv("ES_ADDRESS"); addressesEnv != "" && !flagChanged("elasticsearch.address") {
-		cfg.Addresses = splitAndTrimCommaSeparated(addressesEnv)
-		slog.Debug("Applying ES_ADDRESS from environment variable", "value", cfg.Addresses)
+		// Only override when the env var yields at least one real address; a value of
+		// " " or "," would otherwise wipe the default and produce a confusing error.
+		if parsed := splitAndTrimCommaSeparated(addressesEnv); len(parsed) > 0 {
+			cfg.Addresses = parsed
+			slog.Debug("Applying ES_ADDRESS from environment variable", "value", cfg.Addresses)
+		}
 	}
 
 	if usernameEnv := os.Getenv("ES_USERNAME"); usernameEnv != "" && !flagChanged("elasticsearch.username") {
@@ -140,6 +144,12 @@ func validateConnectionConfig(cfg *ConnectionConfig) error {
 	if len(cfg.Addresses) > 0 && cfg.CloudID != "" {
 		// Client library usually prefers CloudID if both are set, but warn user.
 		slog.Warn("Both elasticsearch.address and elasticsearch.cloud-id are specified; Cloud ID will likely be used by the client library.")
+	}
+
+	// A zero or negative timeout makes context.WithTimeout return an already-expired
+	// context, silently failing every scrape; reject it up front.
+	if cfg.Timeout <= 0 {
+		return fmt.Errorf("elasticsearch.timeout must be positive, got %s", cfg.Timeout)
 	}
 
 	// Validate authentication methods
